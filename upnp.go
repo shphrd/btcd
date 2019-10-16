@@ -50,10 +50,10 @@ import (
 type NAT interface {
 	// Get the external address from outside the NAT.
 	GetExternalAddress() (addr net.IP, err error)
-	// Add a port mapping for protocol ("udp" or "tcp") from externalport to
+	// Add a port mapping for protocol ("udp" or "tcp") from external port to
 	// internal port with description lasting for timeout.
 	AddPortMapping(protocol string, externalPort, internalPort int, description string, timeout int) (mappedExternalPort int, err error)
-	// Remove a previously added port mapping from externalport to
+	// Remove a previously added port mapping from external port to
 	// internal port.
 	DeletePortMapping(protocol string, externalPort, internalPort int) (err error)
 }
@@ -104,7 +104,7 @@ func Discover() (nat NAT, err error) {
 			// return
 		}
 		answer := string(answerBytes[0:n])
-		if strings.Index(answer, "\r\n"+st) < 0 {
+		if !strings.Contains(answer, "\r\n"+st) {
 			continue
 		}
 		// HTTP header field names are case-insensitive.
@@ -298,7 +298,6 @@ func soapRequest(url, function, message string) (replyXML []byte, err error) {
 	}
 	req.Header.Set("Content-Type", "text/xml ; charset=\"utf-8\"")
 	req.Header.Set("User-Agent", "Darwin/10.0.0, UPnP/1.0, MiniUPnPc/1.3")
-	//req.Header.Set("Transfer-Encoding", "chunked")
 	req.Header.Set("SOAPAction", "\"urn:schemas-upnp-org:service:WANIPConnection:1#"+function+"\"")
 	req.Header.Set("Connection", "Close")
 	req.Header.Set("Cache-Control", "no-cache")
@@ -313,7 +312,6 @@ func soapRequest(url, function, message string) (replyXML []byte, err error) {
 	}
 
 	if r.StatusCode >= 400 {
-		// log.Stderr(function, r.StatusCode)
 		err = errors.New("Error " + strconv.Itoa(r.StatusCode) + " for " + function)
 		r = nil
 		return

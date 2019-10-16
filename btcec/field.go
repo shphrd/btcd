@@ -1,5 +1,5 @@
-// Copyright (c) 2013-2014 The btcsuite developers
-// Copyright (c) 2013-2014 Dave Collins
+// Copyright (c) 2013-2016 The btcsuite developers
+// Copyright (c) 2013-2016 Dave Collins
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
@@ -41,7 +41,7 @@ package btcec
 // 3) Since we're dealing with 32-bit values, 64-bits of overflow is a
 //    reasonable choice for #2
 // 4) Given the need for 256-bits of precision and the properties stated in #1,
-//    #2, and #3, the representation which best accomodates this is 10 uint32s
+//    #2, and #3, the representation which best accommodates this is 10 uint32s
 //    with base 2^26 (26 bits * 10 = 260 bits, so the final word only needs 22
 //    bits) which leaves the desired 64 bits (32 * 10 = 320, 320 - 256 = 64) for
 //    overflow
@@ -94,14 +94,26 @@ const (
 	fieldMSBMask = (1 << fieldMSBBits) - 1
 
 	// fieldPrimeWordZero is word zero of the secp256k1 prime in the
-	// internal field representation.  It is used during modular reduction
-	// and negation.
+	// internal field representation.  It is used during negation.
 	fieldPrimeWordZero = 0x3fffc2f
 
 	// fieldPrimeWordOne is word one of the secp256k1 prime in the
-	// internal field representation.  It is used during modular reduction
-	// and negation.
+	// internal field representation.  It is used during negation.
 	fieldPrimeWordOne = 0x3ffffbf
+)
+
+var (
+	// fieldQBytes is the value Q = (P+1)/4 for the secp256k1 prime P. This
+	// value is used to efficiently compute the square root of values in the
+	// field via exponentiation. The value of Q in hex is:
+	//
+	//   Q = 3fffffffffffffffffffffffffffffffffffffffffffffffffffffffbfffff0c
+	fieldQBytes = []byte{
+		0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+		0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+		0xff, 0xff, 0xff, 0xff, 0xbf, 0xff, 0xff, 0x0c,
+	}
 )
 
 // fieldVal implements optimized fixed-precision arithmetic over the
@@ -248,39 +260,15 @@ func (f *fieldVal) SetHex(hexString string) *fieldVal {
 // performs fast modular reduction over the secp256k1 prime by making use of the
 // special form of the prime.
 func (f *fieldVal) Normalize() *fieldVal {
-	// The field representation leaves 6 bits of overflow in each
-	// word so intermediate calculations can be performed without needing
-	// to propagate the carry to each higher word during the calculations.
-	// In order to normalize, first we need to "compact" the full 256-bit
-	// value to the right and treat the additional 64 leftmost bits as
-	// the magnitude.
-	m := f.n[0]
-	t0 := m & fieldBaseMask
-	m = (m >> fieldBase) + f.n[1]
-	t1 := m & fieldBaseMask
-	m = (m >> fieldBase) + f.n[2]
-	t2 := m & fieldBaseMask
-	m = (m >> fieldBase) + f.n[3]
-	t3 := m & fieldBaseMask
-	m = (m >> fieldBase) + f.n[4]
-	t4 := m & fieldBaseMask
-	m = (m >> fieldBase) + f.n[5]
-	t5 := m & fieldBaseMask
-	m = (m >> fieldBase) + f.n[6]
-	t6 := m & fieldBaseMask
-	m = (m >> fieldBase) + f.n[7]
-	t7 := m & fieldBaseMask
-	m = (m >> fieldBase) + f.n[8]
-	t8 := m & fieldBaseMask
-	m = (m >> fieldBase) + f.n[9]
-	t9 := m & fieldMSBMask
-	m = m >> fieldMSBBits
-
-	// At this point, if the magnitude is greater than 0, the overall value
-	// is greater than the max possible 256-bit value.  In particular, it is
-	// "how many times larger" than the max value it is.  Since this field
-	// is doing arithmetic modulo the secp256k1 prime, we need to perform
-	// modular reduction over the prime.
+	// The field representation leaves 6 bits of overflow in each word so
+	// intermediate calculations can be performed without needing to
+	// propagate the carry to each higher word during the calculations.  In
+	// order to normalize, we need to "compact" the full 256-bit value to
+	// the right while propagating any carries through to the high order
+	// word.
+	//
+	// Since this field is doing arithmetic modulo the secp256k1 prime, we
+	// also need to perform modular reduction over the prime.
 	//
 	// Per [HAC] section 14.3.4: Reduction method of moduli of special form,
 	// when the modulus is of the special form m = b^t - c, highly efficient
@@ -296,101 +284,87 @@ func (f *fieldVal) Normalize() *fieldVal {
 	//
 	// The algorithm presented in the referenced section typically repeats
 	// until the quotient is zero.  However, due to our field representation
-	// we already know at least how many times we would need to repeat as
-	// it's the value currently in m.  Thus we can simply multiply the
-	// magnitude by the field representation of the prime and do a single
-	// iteration.  Notice that nothing will be changed when the magnitude is
-	// zero, so we could skip this in that case, however always running
-	// regardless allows it to run in constant time.
-	r := t0 + m*977
-	t0 = r & fieldBaseMask
-	r = (r >> fieldBase) + t1 + m*64
-	t1 = r & fieldBaseMask
-	r = (r >> fieldBase) + t2
-	t2 = r & fieldBaseMask
-	r = (r >> fieldBase) + t3
-	t3 = r & fieldBaseMask
-	r = (r >> fieldBase) + t4
-	t4 = r & fieldBaseMask
-	r = (r >> fieldBase) + t5
-	t5 = r & fieldBaseMask
-	r = (r >> fieldBase) + t6
-	t6 = r & fieldBaseMask
-	r = (r >> fieldBase) + t7
-	t7 = r & fieldBaseMask
-	r = (r >> fieldBase) + t8
-	t8 = r & fieldBaseMask
-	r = (r >> fieldBase) + t9
-	t9 = r & fieldMSBMask
+	// we already know to within one reduction how many times we would need
+	// to repeat as it's the uppermost bits of the high order word.  Thus we
+	// can simply multiply the magnitude by the field representation of the
+	// prime and do a single iteration.  After this step there might be an
+	// additional carry to bit 256 (bit 22 of the high order word).
+	t9 := f.n[9]
+	m := t9 >> fieldMSBBits
+	t9 = t9 & fieldMSBMask
+	t0 := f.n[0] + m*977
+	t1 := (t0 >> fieldBase) + f.n[1] + (m << 6)
+	t0 = t0 & fieldBaseMask
+	t2 := (t1 >> fieldBase) + f.n[2]
+	t1 = t1 & fieldBaseMask
+	t3 := (t2 >> fieldBase) + f.n[3]
+	t2 = t2 & fieldBaseMask
+	t4 := (t3 >> fieldBase) + f.n[4]
+	t3 = t3 & fieldBaseMask
+	t5 := (t4 >> fieldBase) + f.n[5]
+	t4 = t4 & fieldBaseMask
+	t6 := (t5 >> fieldBase) + f.n[6]
+	t5 = t5 & fieldBaseMask
+	t7 := (t6 >> fieldBase) + f.n[7]
+	t6 = t6 & fieldBaseMask
+	t8 := (t7 >> fieldBase) + f.n[8]
+	t7 = t7 & fieldBaseMask
+	t9 = (t8 >> fieldBase) + t9
+	t8 = t8 & fieldBaseMask
 
-	// At this point, the result will be in the range 0 <= result <=
-	// prime + (2^64 - c).  Therefore, one more subtraction of the prime
-	// might be needed if the current result is greater than or equal to the
-	// prime.  The following does the final reduction in constant time.
-	// Note that the if/else here intentionally does the bitwise OR with
-	// zero even though it won't change the value to ensure constant time
-	// between the branches.
-	var mask int32
-	if t0 < fieldPrimeWordZero {
-		mask |= -1
+	// At this point, the magnitude is guaranteed to be one, however, the
+	// value could still be greater than the prime if there was either a
+	// carry through to bit 256 (bit 22 of the higher order word) or the
+	// value is greater than or equal to the field characteristic.  The
+	// following determines if either or these conditions are true and does
+	// the final reduction in constant time.
+	//
+	// Note that the if/else statements here intentionally do the bitwise
+	// operators even when it won't change the value to ensure constant time
+	// between the branches.  Also note that 'm' will be zero when neither
+	// of the aforementioned conditions are true and the value will not be
+	// changed when 'm' is zero.
+	m = 1
+	if t9 == fieldMSBMask {
+		m &= 1
 	} else {
-		mask |= 0
+		m &= 0
 	}
-	if t1 < fieldPrimeWordOne {
-		mask |= -1
+	if t2&t3&t4&t5&t6&t7&t8 == fieldBaseMask {
+		m &= 1
 	} else {
-		mask |= 0
+		m &= 0
 	}
-	if t2 < fieldBaseMask {
-		mask |= -1
+	if ((t0+977)>>fieldBase + t1 + 64) > fieldBaseMask {
+		m &= 1
 	} else {
-		mask |= 0
+		m &= 0
 	}
-	if t3 < fieldBaseMask {
-		mask |= -1
+	if t9>>fieldMSBBits != 0 {
+		m |= 1
 	} else {
-		mask |= 0
+		m |= 0
 	}
-	if t4 < fieldBaseMask {
-		mask |= -1
-	} else {
-		mask |= 0
-	}
-	if t5 < fieldBaseMask {
-		mask |= -1
-	} else {
-		mask |= 0
-	}
-	if t6 < fieldBaseMask {
-		mask |= -1
-	} else {
-		mask |= 0
-	}
-	if t7 < fieldBaseMask {
-		mask |= -1
-	} else {
-		mask |= 0
-	}
-	if t8 < fieldBaseMask {
-		mask |= -1
-	} else {
-		mask |= 0
-	}
-	if t9 < fieldMSBMask {
-		mask |= -1
-	} else {
-		mask |= 0
-	}
-	t0 = t0 - uint32(^mask&fieldPrimeWordZero)
-	t1 = t1 - uint32(^mask&fieldPrimeWordOne)
-	t2 = t2 & uint32(mask)
-	t3 = t3 & uint32(mask)
-	t4 = t4 & uint32(mask)
-	t5 = t5 & uint32(mask)
-	t6 = t6 & uint32(mask)
-	t7 = t7 & uint32(mask)
-	t8 = t8 & uint32(mask)
-	t9 = t9 & uint32(mask)
+	t0 = t0 + m*977
+	t1 = (t0 >> fieldBase) + t1 + (m << 6)
+	t0 = t0 & fieldBaseMask
+	t2 = (t1 >> fieldBase) + t2
+	t1 = t1 & fieldBaseMask
+	t3 = (t2 >> fieldBase) + t3
+	t2 = t2 & fieldBaseMask
+	t4 = (t3 >> fieldBase) + t4
+	t3 = t3 & fieldBaseMask
+	t5 = (t4 >> fieldBase) + t5
+	t4 = t4 & fieldBaseMask
+	t6 = (t5 >> fieldBase) + t6
+	t5 = t5 & fieldBaseMask
+	t7 = (t6 >> fieldBase) + t7
+	t6 = t6 & fieldBaseMask
+	t8 = (t7 >> fieldBase) + t8
+	t7 = t7 & fieldBaseMask
+	t9 = (t8 >> fieldBase) + t9
+	t8 = t8 & fieldBaseMask
+	t9 = t9 & fieldMSBMask // Remove potential multiple of 2^256.
 
 	// Finally, set the normalized and reduced words.
 	f.n[0] = t0
@@ -1260,4 +1234,119 @@ func (f *fieldVal) Inverse() *fieldVal {
 	f.Square().Square().Square().Square().Square() // f = a^(2^251 - 134217760)
 	f.Square().Square().Square().Square().Square() // f = a^(2^256 - 4294968320)
 	return f.Mul(&a45)                             // f = a^(2^256 - 4294968275) = a^(p-2)
+}
+
+// SqrtVal computes the square root of x modulo the curve's prime, and stores
+// the result in f. The square root is computed via exponentiation of x by the
+// value Q = (P+1)/4 using the curve's precomputed big-endian representation of
+// the Q.  This method uses a modified version of square-and-multiply
+// exponentiation over secp256k1 fieldVals to operate on bytes instead of bits,
+// which offers better performance over both big.Int exponentiation and bit-wise
+// square-and-multiply.
+//
+// NOTE: This method only works when P is intended to be the secp256k1 prime and
+// is not constant time. The returned value is of magnitude 1, but is
+// denormalized.
+func (f *fieldVal) SqrtVal(x *fieldVal) *fieldVal {
+	// The following computation iteratively computes x^((P+1)/4) = x^Q
+	// using the recursive, piece-wise definition:
+	//
+	//   x^n = (x^2)^(n/2) mod P       if n is even
+	//   x^n = x(x^2)^(n-1/2) mod P    if n is odd
+	//
+	// Given n in its big-endian representation b_k, ..., b_0, x^n can be
+	// computed by defining the sequence r_k+1, ..., r_0, where:
+	//
+	//   r_k+1 = 1
+	//   r_i   = (r_i+1)^2 * x^b_i    for i = k, ..., 0
+	//
+	// The final value r_0 = x^n.
+	//
+	// See https://en.wikipedia.org/wiki/Exponentiation_by_squaring for more
+	// details.
+	//
+	// This can be further optimized, by observing that the value of Q in
+	// secp256k1 has the value:
+	//
+	//   Q = 3fffffffffffffffffffffffffffffffffffffffffffffffffffffffbfffff0c
+	//
+	// We can unroll the typical bit-wise interpretation of the
+	// exponentiation algorithm above to instead operate on bytes.
+	// This reduces the number of comparisons by an order of magnitude,
+	// reducing the overhead of failed branch predictions and additional
+	// comparisons in this method.
+	//
+	// Since there there are only 4 unique bytes of Q, this keeps the jump
+	// table small without the need to handle all possible 8-bit values.
+	// Further, we observe that 29 of the 32 bytes are 0xff; making the
+	// first case handle 0xff therefore optimizes the hot path.
+	f.SetInt(1)
+	for _, b := range fieldQBytes {
+		switch b {
+
+		// Most common case, where all 8 bits are set.
+		case 0xff:
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+
+		// First byte of Q (0x3f), where all but the top two bits are
+		// set. Note that this case only applies six operations, since
+		// the highest bit of Q resides in bit six of the first byte. We
+		// ignore the first two bits, since squaring for these bits will
+		// result in an invalid result. We forgo squaring f before the
+		// first multiply, since 1^2 = 1.
+		case 0x3f:
+			f.Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+
+		// Byte 28 of Q (0xbf), where only bit 7 is unset.
+		case 0xbf:
+			f.Square().Mul(x)
+			f.Square()
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+
+		// Byte 31 of Q (0x0c), where only bits 3 and 4 are set.
+		default:
+			f.Square()
+			f.Square()
+			f.Square()
+			f.Square()
+			f.Square().Mul(x)
+			f.Square().Mul(x)
+			f.Square()
+			f.Square()
+		}
+	}
+
+	return f
+}
+
+// Sqrt computes the square root of f modulo the curve's prime, and stores the
+// result in f. The square root is computed via exponentiation of x by the value
+// Q = (P+1)/4 using the curve's precomputed big-endian representation of the Q.
+// This method uses a modified version of square-and-multiply exponentiation
+// over secp256k1 fieldVals to operate on bytes instead of bits, which offers
+// better performance over both big.Int exponentiation and bit-wise
+// square-and-multiply.
+//
+// NOTE: This method only works when P is intended to be the secp256k1 prime and
+// is not constant time. The returned value is of magnitude 1, but is
+// denormalized.
+func (f *fieldVal) Sqrt() *fieldVal {
+	return f.SqrtVal(f)
 }

@@ -1,10 +1,13 @@
-// Copyright 2013-2014 The btcsuite developers
+// Copyright 2013-2016 The btcsuite developers
 // Use of this source code is governed by an ISC
 // license that can be found in the LICENSE file.
 
 package btcec
 
-import "testing"
+import (
+	"encoding/hex"
+	"testing"
+)
 
 // BenchmarkAddJacobian benchmarks the secp256k1 curve addJacobian function with
 // Z values of 1 so that the associated optimizations are used.
@@ -20,7 +23,7 @@ func BenchmarkAddJacobian(b *testing.B) {
 	curve := S256()
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		curve.TstAddJacobian(x1, y1, z1, x2, y2, z2, x3, y3, z3)
+		curve.addJacobian(x1, y1, z1, x2, y2, z2, x3, y3, z3)
 	}
 }
 
@@ -39,7 +42,7 @@ func BenchmarkAddJacobianNotZOne(b *testing.B) {
 	curve := S256()
 	b.StartTimer()
 	for i := 0; i < b.N; i++ {
-		curve.TstAddJacobian(x1, y1, z1, x2, y2, z2, x3, y3, z3)
+		curve.addJacobian(x1, y1, z1, x2, y2, z2, x3, y3, z3)
 	}
 }
 
@@ -110,4 +113,33 @@ func BenchmarkSigVerify(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		sig.Verify(msgHash.Bytes(), &pubKey)
 	}
+}
+
+// BenchmarkFieldNormalize benchmarks how long it takes the internal field
+// to perform normalization (which includes modular reduction).
+func BenchmarkFieldNormalize(b *testing.B) {
+	// The normalize function is constant time so default value is fine.
+	f := new(fieldVal)
+	for i := 0; i < b.N; i++ {
+		f.Normalize()
+	}
+}
+
+// BenchmarkParseCompressedPubKey benchmarks how long it takes to decompress and
+// validate a compressed public key from a byte array.
+func BenchmarkParseCompressedPubKey(b *testing.B) {
+	rawPk, _ := hex.DecodeString("0234f9460f0e4f08393d192b3c5133a6ba099aa0ad9fd54ebccfacdfa239ff49c6")
+
+	var (
+		pk  *PublicKey
+		err error
+	)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		pk, err = ParsePubKey(rawPk, S256())
+	}
+	_ = pk
+	_ = err
 }
